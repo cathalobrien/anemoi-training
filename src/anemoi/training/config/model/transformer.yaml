@@ -11,6 +11,7 @@ processor:
   num_heads: 16 # GraphTransformer or Transformer only
   window_size: 512
   dropout_p: 0.0 # GraphTransformer
+  layers: ${model.layers}
 
 encoder:
   _target_: anemoi.models.layers.mapper.GraphTransformerForwardMapper
@@ -21,6 +22,7 @@ encoder:
   num_chunks: 1
   mlp_hidden_ratio: 4 # GraphTransformer or Transformer only
   num_heads: 16 # GraphTransformer or Transformer only
+  layers: ${model.layers}
 
 
 decoder:
@@ -32,6 +34,7 @@ decoder:
   num_chunks: 1
   mlp_hidden_ratio: 4 # GraphTransformer or Transformer only
   num_heads: 16 # GraphTransformer or Transformer only
+  layers: ${model.layers}
 
 trainable_parameters:
   data: 8
@@ -47,3 +50,15 @@ attributes:
   nodes: []
 
 node_loss_weight: area_weight
+
+layers:
+  LayerNorm:
+    #_target_: "transformer_engine.pytorch.LayerNorm"
+    _target_: "transformer_engine.pytorch.RMSNorm"
+    #_target_: "torch.nn.LayerNorm"
+    #_target_: "liger_kernel.transformers.rms_norm.LigerRMSNorm"
+    _partial_: True
+  Linear:
+    _target_: "transformer_engine.pytorch.Linear"
+    #_target_: "torch.nn.Linear"
+    _partial_: True
