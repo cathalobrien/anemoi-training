@@ -1,0 +1,119 @@
+defaults:
+  - hardware: slurm
+  - data: zarr
+  - dataloader: native_grid
+  - model: transformer
+  - graph: encoder_decoder_only
+  - training: default
+  - diagnostics: eval_rollout
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+  - _self_
+
+diagnostics:
+  print_memory_summary: True
+  benchmark_profiler:
+    memory:
+      enabled: False
+      steps: 5 # wait warmup steps and then do steps (too many steps would lead to a big file)
+      warmup: 2
+      extra_plots: False
+      trace_rank0_only: False #set to true and it will profile rank 0 only. Reads SLURM_PROC_ID so won't work when not running via Slurm
+    time:
+      enabled: True
+      verbose: True #If true, output every action the profiler caputres, otherwise output a subset defined in PROFILER_ACTIONS at the top of aifs/diagnostics/profiler.py
+    speed:
+      enabled: True
+    system:
+      enabled: True
+    model_summary:
+      enabled: False
+    snapshot:
+      enabled: False
+    eval:
+      enabled: False
+  profiler: False #tensorboard must also be enabled
+  log:
+    mlflow:
+      enabled: True
+      offline: True
+      experiment_name: 'aifs_profiling'
+      tracking_uri: 'https://mlflow.copernicus-climate.eu'
+    wandb:
+      enabled: False
+    interval: 40
+  plot:
+    #disable plotting
+    enabled: False
+    learned_features: False
+  checkpoint:
+    #disable checkpointing - by setting the checkpoints after the run ends
+    every_n_minutes:
+      save_frequency: null
+      num_models_saved: 0
+    every_n_epochs:
+      save_frequency: null
+      num_models_saved: 0
+    every_n_train_steps:
+      save_frequency: null # Does not scale with rollout
+      num_models_saved: 0
+
+hardware:
+  files:
+    #6 layer deep graph
+    graph: graph_9km.pt
+    #graph: graph_mappings_normed_edge_attrs_20231121125206_o96_h_o48.pt
+    dataset: aifs-od-an-oper-0001-mars-o1280-2023-2023-6h-v1-one-month.zarr
+    #dataset: aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v6.zarr
+  paths:
+          #grids: /home/mlx/data/graphs/
+    grids: /leonardo_work/DestE_340_24/AIFS_grids
+    data:  ${oc.env:SCRATCH}/aifs/
+    output: ${oc.env:SCRATCH}/aifs/outputs/${data.resolution}/
+    #profiler: ${hardware.paths.output}/profiler
+  num_gpus_per_node: 4
+  num_gpus_per_model: 4
+data:
+  resolution: o1280
+  #resolution: o96
+model:
+  processor:
+    window_size: 1120
+    num_heads: 16
+  num_channels: 256 #how many nodes in a single layer, suitable for 1 a100
+  #layer_kernels:
+          #LayerNorm:
+      #_target_: "transformer_engine.pytorch.LayerNorm"
+      #_target_: "transformer_engine.pytorch.RMSNorm"
+      #_target_: "torch.nn.LayerNorm"
+      #_target_: "liger_kernel.transformers.rms_norm.LigerRMSNorm"
+      #_partial_: True
+      #Linear:
+            #_target_: "transformer_engine.pytorch.Linear"
+      #_target_: "torch.nn.Linear"
+      #_partial_: True
+
+dataloader:
+  pin_memory: true
+  replicate_dataset_across_models: false
+  num_workers: #how many dataloaders per task/gpu
+    training: 2
+    validation: 2
+  training: #the first 10 months of 2020
+    start: null #from the start of the dataset
+    end: 20230120
+  validation: #the final 2 months of 2020
+    start: 20230121 #inclusive date range
+    end: 20230125
+  limit_batches:
+    training: 20
+    validation: 0
+  batch_size:
+    training: 1
+    validation: 1
+training:
+  max_epochs: 1
+  mem_frac: .60
+
+graph:
+  overwrite: False
