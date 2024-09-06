@@ -60,6 +60,8 @@ class AnemoiTrainer:
         # Resolve the config to avoid shenanigans with lazy loading
         OmegaConf.resolve(config)
         self.config = config
+        LOGGER.info(f"{self.config.training.mem_frac=}")
+        torch.cuda.set_per_process_memory_fraction(float(self.config.training.mem_frac), 0)
 
         # Default to not warm-starting from a checkpoint
         self.start_from_checkpoint = bool(self.config.training.run_id) or bool(self.config.training.fork_run_id)
