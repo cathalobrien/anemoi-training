@@ -34,8 +34,16 @@ from anemoi.training.diagnostics.mlflow.utils import expand_iterables
 from anemoi.training.diagnostics.mlflow.utils import health_check
 from anemoi.training.utils.jsonify import map_config_to_primitives
 
+
+# try import green and red logging libs
+# if unable, pass here and we try an error
+# if GPU loggers are started 
 try:
     import pynvml
+except ImportError:
+    pass
+try:
+    from pyrsmi import rocml
 except ImportError:
     pass
 
@@ -474,9 +482,10 @@ class AnemoiMLflowLogger(MLFlowLogger):
             def aggregate_metrics(self) -> dict[str, int]:
                 return {k: round(sum(v) / len(v), 1) for k, v in self._metrics.items()}
             
-        class CustomGPUMonitor(BaseMetricsMonitor):
-            """Class for monitoring GPU stats.
+        class GreenGPUMonitor(BaseMetricsMonitor):
+            """Class for monitoring green GPU stats.
 
+            Requires pynvml to be installed.
             Extends default GPUMonitor, to also measure total \
                     memory
 
@@ -486,14 +495,15 @@ class AnemoiMLflowLogger(MLFlowLogger):
                 if "pynvml" not in sys.modules:
                     # Only instantiate if `pynvml` is installed.
                     raise ImportError(
-                        "`pynvml` is not installed, to log GPU metrics please run `pip install pynvml` "
+                        "`pynvml` is not installed, to log green GPU metrics please run `pip install pynvml` "
                         "to install it."
                     )
                 try:
                     # `nvmlInit()` will fail if no GPU is found.
                     pynvml.nvmlInit()
                 except pynvml.NVMLError as e:
-                    raise RuntimeError(f"Failed to initialize NVML, skip logging GPU metrics: {e}")
+                    raise RuntimeError(e)
+                    
 
                 super().__init__()
                 self.num_gpus = pynvml.nvmlDeviceGetCount()
@@ -535,22 +545,78 @@ class AnemoiMLflowLogger(MLFlowLogger):
             def aggregate_metrics(self):
                 return {k: round(sum(v) / len(v), 1) for k, v in self._metrics.items()}
 
+        class RedGPUMonitor(BaseMetricsMonitor):
+            """Class for monitoring red GPU stats.
+
+            Requires that pyrsmi is installed
+            Logs utilization and memory usage.
+
+            """
+
+            def __init__(self):
+                if "pyrsmi" not in sys.modules:
+                    # Only instantiate if `pyrsmi` is installed.
+                    raise ImportError(
+                        "`pyrsmi` is not installed, to log red GPU metrics please run `pip install pyrsmi` "
+                        "to install it."
+                    )
+                try:
+                    # `rocml.smi_initialize()()` will fail if no GPU is found.
+                    rocml.smi_initialize()
+                except RuntimeError as e:
+                    raise RuntimeError(e)
+
+                super().__init__()
+                self.num_gpus = rocml.smi_get_device_count()
+
+            def collect_metrics(self):
+                # Get GPU metrics.
+                for device in range(self.num_gpus):
+                    try:
+                        memory_used = rocml.smi_get_device_memory_used(device)
+                        memory_total = rocml.smi_get_device_memory_total(device)
+                        memory_busy = rocml.smi_get_device_memory_busy(device)
+                        self._metrics[f"gpu_{device}_memory_usage_percentage"].append(
+                            round(memory_used / memory_total * 100, 1)
+                        )
+                        self._metrics[f"gpu_{device}_memory_usage_megabytes"].append(memory_used / 1e6)
+                        
+                        self._metrics[f"gpu_{device}_memory_busy_percentage"].append(memory_busy) 
+                        
+                        # Only record total device memory on GPU 0 to prevent spam
+                        # Unlikely for GPUs on the same node to have different total memory
+                        if (device == 0):
+                            self._metrics[f"gpu_memory_total_megabytes"].append(memory_total / 1e6)
+
+                        utilization = rocml.smi_get_device_utilization(device)
+                        self._metrics[f"gpu_{device}_utilization_percentage"].append(utilization)
+
+                    except RuntimeError as e:
+                        LOGGER.warning(f"Encountered error {e} when trying to collect GPU metrics.")
+
+            def aggregate_metrics(self):
+                return {k: round(sum(v) / len(v), 1) for k, v in self._metrics.items()}
             
 
         class CustomSystemMetricsMonitor(SystemMetricsMonitor):
             def __init__(self, run_id: str, resume_logging: bool = False):
                 super().__init__(run_id, resume_logging=resume_logging)
 
-                # Replace the CPUMonitor with custom implementation
                 self.monitors = [CustomCPUMonitor(), DiskMonitor(), NetworkMonitor()]
+                
+                # I dont know any way to check if the GPU is red or green
+                # So, try init both and catch the error when one init fails
                 try:
-                    gpu_monitor = CustomGPUMonitor()
+                    gpu_monitor = GreenGPUMonitor()
                     self.monitors.append(gpu_monitor)
-                except ImportError:
-                    LOGGER.warning(
-                        "`pynvml` is not installed, to log GPU metrics please run `pip install pynvml` \
-                            to install it",
-                    )
+                except RuntimeError as e:
+                    LOGGER.warning(f"Failed to init Green GPU Monitor: {e}.")
+                try:
+                    gpu_monitor = RedGPUMonitor()
+                    self.monitors.append(gpu_monitor)
+                except RuntimeError as e:
+                    LOGGER.warning(f"Failed to init Red GPU Monitor: {e}.")
+                
 
         mlflow.enable_system_metrics_logging()
         system_monitor = CustomSystemMetricsMonitor(
