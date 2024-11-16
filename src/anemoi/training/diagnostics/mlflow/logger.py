@@ -34,6 +34,11 @@ from anemoi.training.diagnostics.mlflow.utils import expand_iterables
 from anemoi.training.diagnostics.mlflow.utils import health_check
 from anemoi.training.utils.jsonify import map_config_to_primitives
 
+try:
+    import pynvml
+except ImportError:
+    pass
+
 if TYPE_CHECKING:
     from argparse import Namespace
 
@@ -468,6 +473,69 @@ class AnemoiMLflowLogger(MLFlowLogger):
 
             def aggregate_metrics(self) -> dict[str, int]:
                 return {k: round(sum(v) / len(v), 1) for k, v in self._metrics.items()}
+            
+        class CustomGPUMonitor(BaseMetricsMonitor):
+            """Class for monitoring GPU stats.
+
+            Extends default GPUMonitor, to also measure total \
+                    memory
+
+            """
+
+            def __init__(self):
+                if "pynvml" not in sys.modules:
+                    # Only instantiate if `pynvml` is installed.
+                    raise ImportError(
+                        "`pynvml` is not installed, to log GPU metrics please run `pip install pynvml` "
+                        "to install it."
+                    )
+                try:
+                    # `nvmlInit()` will fail if no GPU is found.
+                    pynvml.nvmlInit()
+                except pynvml.NVMLError as e:
+                    raise RuntimeError(f"Failed to initialize NVML, skip logging GPU metrics: {e}")
+
+                super().__init__()
+                self.num_gpus = pynvml.nvmlDeviceGetCount()
+                self.gpu_handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(self.num_gpus)]
+
+            def collect_metrics(self):
+                # Get GPU metrics.
+                for i, handle in enumerate(self.gpu_handles):
+                    try:
+                        memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                        self._metrics[f"gpu_{i}_memory_usage_percentage"].append(
+                            round(memory.used / memory.total * 100, 1)
+                        )
+                        self._metrics[f"gpu_{i}_memory_usage_megabytes"].append(memory.used / 1e6)
+                        
+                        # Only record total device memory on GPU 0 to prevent spam
+                        # Unlikely for GPUs on the same node to have different total memory
+                        if (i == 0):
+                            self._metrics[f"gpu_memory_total_megabytes"].append(memory.total / 1e6)
+
+                        # Monitor PCIe usage
+                        tx_kilobytes = pynvml.nvmlDeviceGetPcieThroughput(handle, pynvml.NVML_PCIE_UTIL_TX_BYTES)
+                        rx_kilobytes = pynvml.nvmlDeviceGetPcieThroughput(handle, pynvml.NVML_PCIE_UTIL_RX_BYTES)
+                        self._metrics[f"gpu_{i}_pcie_tx_megabytes"].append(tx_kilobytes / 1e3) 
+                        self._metrics[f"gpu_{i}_pcie_rx_megabytes"].append(rx_kilobytes / 1e3)
+
+                        device_utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                        self._metrics[f"gpu_{i}_utilization_percentage"].append(device_utilization.gpu)
+
+                        power_milliwatts = pynvml.nvmlDeviceGetPowerUsage(handle)
+                        power_capacity_milliwatts = pynvml.nvmlDeviceGetEnforcedPowerLimit(handle)
+                        self._metrics[f"gpu_{i}_power_usage_watts"].append(power_milliwatts / 1000)
+                        self._metrics[f"gpu_{i}_power_usage_percentage"].append(
+                            (power_milliwatts / power_capacity_milliwatts) * 100
+                        )
+                    except pynvml.nvml.NVMLError as e:
+                        LOGGER.warning(f"Encountered error {e} when trying to collect GPU metrics.")
+
+            def aggregate_metrics(self):
+                return {k: round(sum(v) / len(v), 1) for k, v in self._metrics.items()}
+
+            
 
         class CustomSystemMetricsMonitor(SystemMetricsMonitor):
             def __init__(self, run_id: str, resume_logging: bool = False):
@@ -476,7 +544,7 @@ class AnemoiMLflowLogger(MLFlowLogger):
                 # Replace the CPUMonitor with custom implementation
                 self.monitors = [CustomCPUMonitor(), DiskMonitor(), NetworkMonitor()]
                 try:
-                    gpu_monitor = GPUMonitor()
+                    gpu_monitor = CustomGPUMonitor()
                     self.monitors.append(gpu_monitor)
                 except ImportError:
                     LOGGER.warning(
