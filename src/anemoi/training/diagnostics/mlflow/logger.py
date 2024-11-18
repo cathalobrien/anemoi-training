@@ -611,10 +611,14 @@ class AnemoiMLflowLogger(MLFlowLogger):
                     self.monitors.append(gpu_monitor)
                 except RuntimeError as e:
                     LOGGER.warning(f"Failed to init Green GPU Monitor: {e}.")
+                except ImportError as e:
+                    LOGGER.warning(f"Failed to init Green GPU Monitor: {e}.")
                 try:
                     gpu_monitor = RedGPUMonitor()
                     self.monitors.append(gpu_monitor)
                 except RuntimeError as e:
+                    LOGGER.warning(f"Failed to init Red GPU Monitor: {e}.")
+                except ImportError as e:
                     LOGGER.warning(f"Failed to init Red GPU Monitor: {e}.")
                 
 
