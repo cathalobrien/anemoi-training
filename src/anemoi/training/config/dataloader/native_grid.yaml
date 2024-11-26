@@ -29,6 +29,8 @@ limit_batches:
   test: 20
   predict: 20
 
+async: true
+
 # ============
 # Dataloader definitions
 # These follow the anemoi-datasets patterns

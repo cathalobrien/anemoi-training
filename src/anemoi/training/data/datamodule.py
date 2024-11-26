@@ -24,6 +24,13 @@ from torch.utils.data import DataLoader
 from anemoi.training.data.dataset import NativeGridDataset
 from anemoi.training.data.dataset import worker_init_func
 
+try:
+    from anemoi.training.utils.async_dataloader import AsynchronousLoader
+except ImportError:
+    ASYNC_DATALOADER_AVAILABLE = False
+else:
+    ASYNC_DATALOADER_AVAILABLE = True
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -194,7 +201,8 @@ class AnemoiDatasetsDataModule(pl.LightningDataModule):
 
     def _get_dataloader(self, ds: NativeGridDataset, stage: str) -> DataLoader:
         assert stage in {"training", "validation", "test"}
-        return DataLoader(
+
+        dataloader = DataLoader(
             ds,
             batch_size=self.config.dataloader.batch_size[stage],
             # number of worker processes
@@ -208,6 +216,13 @@ class AnemoiDatasetsDataModule(pl.LightningDataModule):
             prefetch_factor=self.config.dataloader.prefetch_factor,
             persistent_workers=True,
         )
+
+        if ASYNC_DATALOADER_AVAILABLE and self.config.dataloader.get("async", False):
+            q_size=4
+            LOGGER.info(f"Dataloading asynchronously with a queue size of {q_size}")
+            return AsynchronousLoader(dataloader, device="cuda", q_size=q_size, num_batches=self.config.dataloader.limit_batches[stage])
+        else:
+            return dataloader
 
     def train_dataloader(self) -> DataLoader:
         return self._get_dataloader(self.ds_train, "training")
